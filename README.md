@@ -97,7 +97,22 @@ extra_hosts:
   - "host.docker.internal:host-gateway"
 ```
 
-Neo4j and Ollama must accept connections from Docker. For a local development setup, Neo4j's `neo4j.conf` can use `server.default_listen_address=0.0.0.0`; restart the instance after editing. Configure Ollama with `OLLAMA_HOST=0.0.0.0:11434` in its launch environment or service and restart it. Restrict access to the intended local/Docker network. See [Neo4j connector configuration](https://neo4j.com/docs/operations-manual/current/configuration/connectors/) and [Ollama configuration](https://docs.ollama.com/faq).
+Neo4j's HTTP connector must accept connections from Docker. In the development instance, the only Neo4j configuration change needed was this line in the instance's `neo4j.conf`, followed by a restart:
+
+```properties
+server.http.listen_address=172.17.0.1:7474
+```
+
+`172.17.0.1` was the Docker bridge address on the development machine; use the appropriate host-side address on another machine. The workflows use the HTTP Query API, so no Bolt connector change was needed.
+
+Ollama was already reachable from n8n. Checking its existing Linux systemd service confirmed `OLLAMA_HOST=0.0.0.0:11434`, with port 11434 listening on all interfaces. No additional Ollama configuration change was needed during this project. On another machine, check the current setup first:
+
+```bash
+systemctl show ollama.service --property=Environment --property=DropInPaths
+ss -ltn '( sport = :11434 )'
+```
+
+For this setup, the first command includes `OLLAMA_HOST=0.0.0.0:11434`; the second shows a listener on `*:11434`. Test access from n8n with an HTTP Request to `http://host.docker.internal:11434/api/tags`. If it succeeds, leave the configuration unchanged. If Ollama only listens on localhost and cannot be reached from Docker, configure its listening address in its launch environment or service and restart it. Restrict access to the intended local/Docker network. See [Neo4j connector configuration](https://neo4j.com/docs/operations-manual/current/configuration/connectors/) and [Ollama configuration](https://docs.ollama.com/faq).
 
 If n8n runs directly on the host, replace `host.docker.internal` with `localhost` in the HTTP Request nodes. For another deployment, replace it with the reachable service address. Update the database name in URLs if using a name other than `neo4j`.
 
