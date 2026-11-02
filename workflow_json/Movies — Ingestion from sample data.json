@@ -1,0 +1,182 @@
+{
+  "name": "Movies — Ingestion from sample data",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c18bac98-4925-4aa9-9e79-c98bf766b1e6",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  statement: `\n    MERGE (m:Movie {imdbId: $movie.imdbId})\n    SET m.title = $movie.title,\n        m.year = $movie.year,\n        m.runtimeMinutes = $movie.runtimeMinutes,\n        m.imdbRating = $movie.imdbRating,\n        m.plot = $movie.plot,\n        m.source = $movie.source,\n        m.dataSource = $movie.dataSource,\n        m.embeddingText = $movie.embeddingText\n\n    FOREACH (name IN $movie.directors |\n      MERGE (p:Person {name: name})\n      MERGE (m)-[:DIRECTED_BY]->(p)\n    )\n\n    FOREACH (name IN $movie.actors |\n      MERGE (p:Person {name: name})\n      MERGE (p)-[:ACTED_IN]->(m)\n    )\n\n    FOREACH (name IN $movie.genres |\n      MERGE (g:Genre {name: name})\n      MERGE (m)-[:IN_GENRE]->(g)\n    )\n\n    RETURN m.imdbId AS imdbId, m.title AS title\n  `,\n  parameters: {\n    movie: $json\n  }\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        0
+      ],
+      "id": "946e1d06-9212-4ae8-824d-67b6d81df950",
+      "name": "Save movie graph",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function splitList(value) {\n  if (!value || value === 'N/A') return [];\n  return [...new Set(value.split(',').map(s => s.trim()).filter(Boolean))];\n}\n\nfunction numberOrNull(value) {\n  if (!value || value === 'N/A') return null;\n  const number = Number(value);\n  return Number.isFinite(number) ? number : null;\n}\n\nreturn $input.all().map(item => {\n  const movie = item.json;\n\n  if (movie.Response !== 'True' || !movie.imdbID) {\n    throw new Error(movie.Error || 'Invalid OMDb movie response');\n  }\n\n  if (!movie.Plot || movie.Plot === 'N/A') {\n    throw new Error(`Missing plot for ${movie.imdbID}`);\n  }\n\n  return {\n    json: {\n      imdbId: movie.imdbID,\n      title: movie.Title,\n      year: numberOrNull(movie.Year),\n      runtimeMinutes: numberOrNull(\n        movie.Runtime?.replace(/\\s*min$/, '')\n      ),\n      imdbRating: numberOrNull(movie.imdbRating),\n      plot: movie.Plot,\n      directors: splitList(movie.Director),\n      actors: splitList(movie.Actors),\n      genres: splitList(movie.Genre),\n      source: `https://www.imdb.com/title/${movie.imdbID}/`,\n      dataSource: 'OMDb',\n      embeddingText: [\n        `Title: ${movie.Title}`,\n        `Genres: ${movie.Genre}`,\n        `Plot: ${movie.Plot}`\n      ].join('\\n')\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "89059df7-6e98-4e6d-90e4-c9fdf49556b2",
+      "name": "Normalise movie"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  model: \"nomic-embed-text:latest\",\n  input: \"search_document: \" + $('Normalise movie').item.json.embeddingText,\n  truncate: false\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        0
+      ],
+      "id": "f7b04e0e-9168-4978-bf43-6b58ff486b25",
+      "name": "Embed movie plot"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  statement: `\n    MATCH (m:Movie {imdbId: $imdbId})\n    SET m.embedding = $embedding,\n        m.embeddingModel = $model\n    RETURN m.title AS title,\n           size(m.embedding) AS dimensions\n  `,\n  parameters: {\n    imdbId: $('Normalise movie').item.json.imdbId,\n    embedding: $json.embeddings[0],\n    model: \"nomic-embed-text:latest\"\n  }\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "b44c5e6c-3b8a-4ddf-8b1f-93e0e0f3aa7b",
+      "name": "Save movie embedding",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const movies = [\n  {\n    \"Title\": \"Inception\",\n    \"Year\": \"2010\",\n    \"Rated\": \"PG-13\",\n    \"Released\": \"16 Jul 2010\",\n    \"Runtime\": \"148 min\",\n    \"Genre\": \"Adventure, Sci-Fi, Thriller\",\n    \"Director\": \"Christopher Nolan\",\n    \"Writer\": \"Christopher Nolan\",\n    \"Actors\": \"Leonardo DiCaprio, Joseph Gordon-Levitt, Elliot Page\",\n    \"Plot\": \"Dom Cobb is a skilled thief, the absolute best in the dangerous art of extraction, stealing valuable secrets from deep within the subconscious during the dream state, when the mind is at its most vulnerable. Cobb's rare ability has made him a coveted player in this treacherous new world of corporate espionage, but it has also made him an international fugitive and cost him everything he has ever loved. Now Cobb is being offered a chance at redemption. One last job could give him his life back but only if he can accomplish the impossible, inception. Instead of the perfect heist, Cobb and his team of specialists have to pull off the reverse: their task is not to steal an idea, but to plant one. If they succeed, it could be the perfect crime. But no amount of careful planning or expertise can prepare the team for the dangerous enemy that seems to predict their every move. An enemy that only Cobb could have seen coming.\",\n    \"Language\": \"English, Japanese, French\",\n    \"Country\": \"United Kingdom, United States\",\n    \"Awards\": \"Won 4 Oscars. 160 wins & 220 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BMjAxMzY3NjcxNF5BMl5BanBnXkFtZTcwNTI5OTM0Mw@@._V1_QL75_UX380_CR0,0,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.8/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"86%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"74/100\"\n      }\n    ],\n    \"Metascore\": \"74\",\n    \"imdbRating\": \"8.8\",\n    \"imdbVotes\": \"2,877,173\",\n    \"imdbID\": \"tt1375666\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$292,587,330\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"Interstellar\",\n    \"Year\": \"2014\",\n    \"Rated\": \"PG-13\",\n    \"Released\": \"07 Nov 2014\",\n    \"Runtime\": \"169 min\",\n    \"Genre\": \"Adventure, Sci-Fi\",\n    \"Director\": \"Christopher Nolan\",\n    \"Writer\": \"Jonathan Nolan, Christopher Nolan\",\n    \"Actors\": \"Matthew McConaughey, Anne Hathaway, Jessica Chastain\",\n    \"Plot\": \"In the near future around the American Midwest, Cooper, an ex-science engineer and pilot, is tied to his farming land with his daughter Murph and son Tom. As devastating sandstorms ravage Earth's crops, the people of Earth realize their life here is coming to an end as food begins to run out. Eventually stumbling upon a N.A.S.A. base 6 hours from Cooper's home, he is asked to go on a daring mission with a few other scientists into a wormhole because of Cooper's scientific intellect and ability to pilot aircraft unlike the other crew members. In order to find a new home while Earth decays, Cooper must decide to either stay, or risk never seeing his children again in order to save the human race by finding another habitable planet.\",\n    \"Language\": \"English\",\n    \"Country\": \"United States, United Kingdom, Canada\",\n    \"Awards\": \"Won 1 Oscar. 45 wins & 148 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BYzdjMDAxZGItMjI2My00ODA1LTlkNzItOWFjMDU5ZDJlYWY3XkEyXkFqcGc@._V1_QL75_UX380_CR0,0,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.7/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"73%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"74/100\"\n      }\n    ],\n    \"Metascore\": \"74\",\n    \"imdbRating\": \"8.7\",\n    \"imdbVotes\": \"2,617,722\",\n    \"imdbID\": \"tt0816692\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$203,227,580\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"Memento\",\n    \"Year\": \"2001\",\n    \"Rated\": \"R\",\n    \"Released\": \"25 May 2001\",\n    \"Runtime\": \"113 min\",\n    \"Genre\": \"Mystery, Thriller\",\n    \"Director\": \"Christopher Nolan\",\n    \"Writer\": \"Christopher Nolan, Jonathan Nolan\",\n    \"Actors\": \"Guy Pearce, Carrie-Anne Moss, Joe Pantoliano\",\n    \"Plot\": \"Memento chronicles two separate stories of Leonard, an ex-insurance investigator who can no longer build new memories, as he attempts to find the murderer of his wife, which is the last thing he remembers. One story line moves forward in time while the other tells the story backwards revealing more each time.\",\n    \"Language\": \"English\",\n    \"Country\": \"United States\",\n    \"Awards\": \"Nominated for 2 Oscars. 57 wins & 59 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BMGQ3Y2Q4NjktN2E4Ny00Y2Q2LTliZDUtZTNiNjRhY2I0NGIyXkEyXkFqcGc@._V1_QL75_UX380_CR0,4,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.4/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"94%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"83/100\"\n      }\n    ],\n    \"Metascore\": \"83\",\n    \"imdbRating\": \"8.4\",\n    \"imdbVotes\": \"1,462,185\",\n    \"imdbID\": \"tt0209144\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$25,544,867\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"The Prestige\",\n    \"Year\": \"2006\",\n    \"Rated\": \"PG-13\",\n    \"Released\": \"20 Oct 2006\",\n    \"Runtime\": \"130 min\",\n    \"Genre\": \"Drama, Mystery, Sci-Fi\",\n    \"Director\": \"Christopher Nolan\",\n    \"Writer\": \"Jonathan Nolan, Christopher Nolan, Christopher Priest\",\n    \"Actors\": \"Christian Bale, Hugh Jackman, Scarlett Johansson\",\n    \"Plot\": \"Robert Angier lives for the roar of the crowd while Alfred Borden lives for the secret. When a botched stunt leaves Angier widowed, his grief curdles into a toxic fixation on Borden's superior technique. The catalyst of loss drives Angier to hunt the mechanics of a rival's trick, leading him into a collision with experimental science and personal ruin. He pivots toward a ruthless vanity, choosing to hollow out his own identity to achieve a flawless stage presence. The cost of this pursuit is a total disintegration of his moral center, as he trades his humanity for the fleeting ecstasy of outshining his enemy.\",\n    \"Language\": \"English\",\n    \"Country\": \"United Kingdom, United States\",\n    \"Awards\": \"Nominated for 2 Oscars. 6 wins & 44 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BM2Y0YmM5MWYtZTYzNi00ZjU5LTlmOGYtZDQ4ODQyMjAzNjQ2XkEyXkFqcGc@._V1_QL75_UX380_CR0,2,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.5/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"77%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"66/100\"\n      }\n    ],\n    \"Metascore\": \"66\",\n    \"imdbRating\": \"8.5\",\n    \"imdbVotes\": \"1,631,947\",\n    \"imdbID\": \"tt0482571\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$53,089,891\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"The Dark Knight\",\n    \"Year\": \"2008\",\n    \"Rated\": \"PG-13\",\n    \"Released\": \"18 Jul 2008\",\n    \"Runtime\": \"152 min\",\n    \"Genre\": \"Crime, Thriller\",\n    \"Director\": \"Christopher Nolan\",\n    \"Writer\": \"Jonathan Nolan, Christopher Nolan, David S. Goyer\",\n    \"Actors\": \"Christian Bale, Heath Ledger, Aaron Eckhart\",\n    \"Plot\": \"Set within a year after the events of Batman Begins (2005), Batman, Lieutenant James Gordon, and new District Attorney Harvey Dent successfully begin to round up the criminals that plague Gotham City, until a mysterious and sadistic criminal mastermind known only as \\\"The Joker\\\" appears in Gotham, creating a new wave of chaos. Batman's struggle against The Joker becomes deeply personal, forcing him to \\\"confront everything he believes\\\" and improve his technology to stop him. A love triangle develops between Bruce Wayne, Dent, and Rachel Dawes.\",\n    \"Language\": \"English, Mandarin\",\n    \"Country\": \"United States, United Kingdom\",\n    \"Awards\": \"Won 2 Oscars. 164 wins & 165 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BMTMxNTMwODM0NF5BMl5BanBnXkFtZTcwODAyMTk2Mw@@._V1_QL75_UX380_CR0,0,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"9.1/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"94%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"85/100\"\n      }\n    ],\n    \"Metascore\": \"85\",\n    \"imdbRating\": \"9.1\",\n    \"imdbVotes\": \"3,236,507\",\n    \"imdbID\": \"tt0468569\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$534,987,076\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"The Matrix\",\n    \"Year\": \"1999\",\n    \"Rated\": \"R\",\n    \"Released\": \"31 Mar 1999\",\n    \"Runtime\": \"136 min\",\n    \"Genre\": \"Action, Sci-Fi\",\n    \"Director\": \"Lana Wachowski, Lilly Wachowski\",\n    \"Writer\": \"Lilly Wachowski, Lana Wachowski\",\n    \"Actors\": \"Keanu Reeves, Laurence Fishburne, Carrie-Anne Moss\",\n    \"Plot\": \"Thomas A. Anderson is a man living two lives. By day he is an average computer programmer and by night a hacker known as Neo. Neo has always questioned his reality, but the truth is far beyond his imagination. Neo finds himself targeted by the police when he is contacted by Morpheus, a legendary computer hacker branded a terrorist by the government. As a rebel against the machines, Neo must confront the agents: super-powerful computer programs devoted to stopping Neo and the entire human rebellion.\",\n    \"Language\": \"English\",\n    \"Country\": \"United States\",\n    \"Awards\": \"Won 4 Oscars. 42 wins & 52 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BN2NmN2VhMTQtMDNiOS00NDlhLTliMjgtODE2ZTY0ODQyNDRhXkEyXkFqcGc@._V1_QL75_UX380_CR0,4,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.7/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"83%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"73/100\"\n      }\n    ],\n    \"Metascore\": \"73\",\n    \"imdbRating\": \"8.7\",\n    \"imdbVotes\": \"2,284,373\",\n    \"imdbID\": \"tt0133093\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$177,559,005\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"Fight Club\",\n    \"Year\": \"1999\",\n    \"Rated\": \"R\",\n    \"Released\": \"15 Oct 1999\",\n    \"Runtime\": \"139 min\",\n    \"Genre\": \"Crime, Drama, Thriller\",\n    \"Director\": \"David Fincher\",\n    \"Writer\": \"Chuck Palahniuk, Jim Uhls\",\n    \"Actors\": \"Brad Pitt, Edward Norton, Meat Loaf\",\n    \"Plot\": \"A nameless first-person narrator attends support groups in an attempt to subdue his emotional state and relieve his insomniac state. When he meets Marla, another fake attendee of support groups, his life seems to become a little more bearable. However, when he associates himself with Tyler he is dragged into an underground fight club and soap-making scheme. Together the two men spiral out of control and engage in competitive rivalry for love and power.\",\n    \"Language\": \"English\",\n    \"Country\": \"United States, Germany\",\n    \"Awards\": \"Nominated for 1 Oscar. 12 wins & 38 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BOTgyOGQ1NDItNGU3Ny00MjU3LTg2YWEtNmEyYjBiMjI1Y2M5XkEyXkFqcGc@._V1_QL75_UX380_CR0,4,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.8/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"81%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"67/100\"\n      }\n    ],\n    \"Metascore\": \"67\",\n    \"imdbRating\": \"8.8\",\n    \"imdbVotes\": \"2,669,989\",\n    \"imdbID\": \"tt0137523\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$38,003,039\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"Shutter Island\",\n    \"Year\": \"2010\",\n    \"Rated\": \"R\",\n    \"Released\": \"19 Feb 2010\",\n    \"Runtime\": \"138 min\",\n    \"Genre\": \"Mystery, Thriller\",\n    \"Director\": \"Martin Scorsese\",\n    \"Writer\": \"Laeta Kalogridis, Dennis Lehane\",\n    \"Actors\": \"Leonardo DiCaprio, Emily Mortimer, Mark Ruffalo\",\n    \"Plot\": \"In 1954, up-and-coming U.S. marshal Teddy Daniels is assigned to investigate the disappearance of a patient from Boston's Shutter Island Ashecliffe Hospital. He's been pushing for an assignment on the island for personal reasons, but before long he thinks he's been brought there as part of a twisted plot by hospital doctors whose radical treatments range from unethical to illegal to downright sinister. Teddy's shrewd investigating skills soon provide a promising lead, but the hospital refuses him access to records he suspects would break the case wide open. As a hurricane cuts off communication with the mainland, more dangerous criminals \\\"escape\\\" in the confusion, and the puzzling, improbable clues multiply, Teddy begins to doubt everything - his memory, his partner, even his own sanity.\",\n    \"Language\": \"English, German\",\n    \"Country\": \"Canada, United States\",\n    \"Awards\": \"11 wins & 66 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BN2FjNWExYzEtY2YzOC00YjNlLTllMTQtNmIwM2Q1YzBhOWM1XkEyXkFqcGc@._V1_QL75_UX380_CR0,0,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.2/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"69%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"63/100\"\n      }\n    ],\n    \"Metascore\": \"63\",\n    \"imdbRating\": \"8.2\",\n    \"imdbVotes\": \"1,689,261\",\n    \"imdbID\": \"tt1130884\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$128,012,934\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"The Martian\",\n    \"Year\": \"2015\",\n    \"Rated\": \"PG-13\",\n    \"Released\": \"02 Oct 2015\",\n    \"Runtime\": \"144 min\",\n    \"Genre\": \"Adventure, Drama, Sci-Fi\",\n    \"Director\": \"Ridley Scott\",\n    \"Writer\": \"Drew Goddard, Andy Weir\",\n    \"Actors\": \"Matt Damon, Jessica Chastain, Kristen Wiig\",\n    \"Plot\": \"During a manned mission to Mars, Astronaut Mark Watney is presumed dead after a fierce storm and left behind by his crew. But Watney has survived and finds himself stranded and alone on the hostile planet. With only meager supplies, he must draw upon his ingenuity, wit and spirit to subsist and find a way to signal to Earth that he is alive. Millions of miles away, NASA and a team of international scientists work tirelessly to bring \\\"the Martian\\\" home, while his crewmates concurrently plot a daring, if not impossible, rescue mission. As these stories of incredible bravery unfold, the world comes together to root for Watney's safe return.\",\n    \"Language\": \"English, Mandarin\",\n    \"Country\": \"United States, United Kingdom, Hungary, Jordan\",\n    \"Awards\": \"Nominated for 7 Oscars. 41 wins & 199 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BMTc2MTQ3MDA1Nl5BMl5BanBnXkFtZTgwODA3OTI4NjE@._V1_QL75_UY562_CR0,0,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"8.0/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"91%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"80/100\"\n      }\n    ],\n    \"Metascore\": \"80\",\n    \"imdbRating\": \"8.0\",\n    \"imdbVotes\": \"1,032,684\",\n    \"imdbID\": \"tt3659388\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$228,433,663\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  },\n  {\n    \"Title\": \"Arrival\",\n    \"Year\": \"2016\",\n    \"Rated\": \"PG-13\",\n    \"Released\": \"11 Nov 2016\",\n    \"Runtime\": \"116 min\",\n    \"Genre\": \"Drama, Mystery, Sci-Fi\",\n    \"Director\": \"Denis Villeneuve\",\n    \"Writer\": \"Eric Heisserer, Ted Chiang\",\n    \"Actors\": \"Amy Adams, Jeremy Renner, Forest Whitaker\",\n    \"Plot\": \"Linguistics professor Louise Banks leads an elite team of investigators when gigantic spaceships touchdown in 12 locations around the world. As nations teeter on the verge of global war, Banks and her crew must race against time to find a way to communicate with the extraterrestrial visitors. Hoping to unravel the mystery, she takes a chance that could threaten her life and quite possibly all of mankind.\",\n    \"Language\": \"English, Mandarin, Russian\",\n    \"Country\": \"Canada, United States\",\n    \"Awards\": \"Won 1 Oscar. 73 wins & 276 nominations total\",\n    \"Poster\": \"https://m.media-amazon.com/images/M/MV5BMTExMzU0ODcxNDheQTJeQWpwZ15BbWU4MDE1OTI4MzAy._V1_QL75_UX380_CR0,16,380,562_.jpg\",\n    \"Ratings\": [\n      {\n        \"Source\": \"Internet Movie Database\",\n        \"Value\": \"7.9/10\"\n      },\n      {\n        \"Source\": \"Rotten Tomatoes\",\n        \"Value\": \"94%\"\n      },\n      {\n        \"Source\": \"Metacritic\",\n        \"Value\": \"81/100\"\n      }\n    ],\n    \"Metascore\": \"81\",\n    \"imdbRating\": \"7.9\",\n    \"imdbVotes\": \"882,127\",\n    \"imdbID\": \"tt2543164\",\n    \"Type\": \"movie\",\n    \"DVD\": \"N/A\",\n    \"BoxOffice\": \"$100,546,139\",\n    \"Production\": \"N/A\",\n    \"Website\": \"N/A\",\n    \"Response\": \"True\"\n  }\n]\n\nreturn movies.map(movie => ({ json: movie }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "2e7c93f0-3c5a-4867-8259-a3b39bd4788f",
+      "name": "Sample data"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Sample data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save movie graph": {
+      "main": [
+        [
+          {
+            "node": "Embed movie plot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise movie": {
+      "main": [
+        [
+          {
+            "node": "Save movie graph",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed movie plot": {
+      "main": [
+        [
+          {
+            "node": "Save movie embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample data": {
+      "main": [
+        [
+          {
+            "node": "Normalise movie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "4a401fdf-04ca-40dd-963d-d9cc28afdc7d",
+  "meta": {
+    "instanceId": "70a4fc6cc130c73f7fcd819facecee8ed0d42bd6c46a9fcf26fad49c3bb5c3bf"
+  },
+  "nodeGroups": [],
+  "id": "q8CDmnG5Zdcc1WgR",
+  "tags": []
+}

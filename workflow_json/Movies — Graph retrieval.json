@@ -1,0 +1,156 @@
+{
+  "name": "Movies — Graph retrieval",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "97d25fa8-8bbf-4ea1-adef-89c8c194a087",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  statement: `\n    MATCH (seed:Movie {imdbId: $imdbId})\n    MATCH (seed)-[:DIRECTED_BY]->(person:Person)\n          <-[:DIRECTED_BY]-(other:Movie)\n    WHERE other <> seed\n    RETURN seed.title AS selectedMovie,\n           other.imdbId AS imdbId,\n           other.title AS title,\n           other.year AS year,\n           'shared director' AS connection,\n           person.name AS person,\n           other.source AS source\n\n    UNION\n\n    MATCH (seed:Movie {imdbId: $imdbId})\n    MATCH (seed)<-[:ACTED_IN]-(person:Person)\n          -[:ACTED_IN]->(other:Movie)\n    WHERE other <> seed\n    RETURN seed.title AS selectedMovie,\n           other.imdbId AS imdbId,\n           other.title AS title,\n           other.year AS year,\n           'shared actor' AS connection,\n           person.name AS person,\n           other.source AS source\n  `,\n  parameters: {\n    imdbId: $json.imdbId\n  }\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        96
+      ],
+      "id": "b362323d-8b9d-401c-92c4-73715225908b",
+      "name": "Find connected movies",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "52de8d5d-80d3-4dd1-9ec2-366b0d05e63d",
+              "name": "imdbId",
+              "value": "tt1375666",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        224,
+        0
+      ],
+      "id": "b85ed827-ca17-4a09-89e6-d0eaf62b2c09",
+      "name": "Set movie ID"
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "imdbId"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        224,
+        192
+      ],
+      "id": "4337e887-b53a-421c-8e94-d3067d9d651f",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\n\nif (response.errors?.length) {\n  throw new Error(JSON.stringify(response.errors));\n}\n\nif (!response.data) {\n  throw new Error('Neo4j response is missing data');\n}\n\nconst { fields, values } = response.data;\n\nconst results = values.map(row =>\n  Object.fromEntries(\n    fields.map((field, index) => [field, row[index]])\n  )\n);\n\nreturn [{\n  json: {\n    count: results.length,\n    results\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        96
+      ],
+      "id": "e2ddaabb-feff-4f04-94c6-367f7675c78a",
+      "name": "Format results"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Set movie ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set movie ID": {
+      "main": [
+        [
+          {
+            "node": "Find connected movies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Find connected movies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find connected movies": {
+      "main": [
+        [
+          {
+            "node": "Format results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "cb8bcb1e-d3fc-4958-86dd-1b09c59a1df2",
+  "meta": {
+    "instanceId": "70a4fc6cc130c73f7fcd819facecee8ed0d42bd6c46a9fcf26fad49c3bb5c3bf"
+  },
+  "nodeGroups": [],
+  "id": "ZeD7LRrSrwKgSECR",
+  "tags": []
+}

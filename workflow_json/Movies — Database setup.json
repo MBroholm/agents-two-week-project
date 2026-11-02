@@ -1,0 +1,179 @@
+{
+  "name": "Movies — Database setup",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "8f18f8fd-6b7e-4da0-af3b-8b1f2fb7740c",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"statement\": \"RETURN 'Connected to movie database' AS message\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        0
+      ],
+      "id": "74aa949f-1581-44cf-8ee0-2dbdd6caff45",
+      "name": "Connection test",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"statement\": \"CREATE CONSTRAINT movie_imdb_id IF NOT EXISTS FOR (m:Movie) REQUIRE m.imdbId IS UNIQUE\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        0
+      ],
+      "id": "9a18cdb4-21a2-4281-9fe1-6059c63a5e44",
+      "name": "Create movie ID constraint",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"statement\": \"CREATE VECTOR INDEX movie_embedding IF NOT EXISTS FOR (m:Movie) ON m.embedding OPTIONS { indexConfig: { `vector.dimensions`: 768, `vector.similarity_function`: 'cosine' } }\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        0
+      ],
+      "id": "9ff06a29-37dc-4091-88ca-b2477b0ba204",
+      "name": "Create vector index",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"statement\": \"SHOW VECTOR INDEXES YIELD name, state, populationPercent WHERE name = 'movie_embedding' RETURN name, state, populationPercent\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        0
+      ],
+      "id": "1a89cd8f-dced-4cde-a5eb-6545c34edd3b",
+      "name": "Check vector index",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Connection test",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Connection test": {
+      "main": [
+        [
+          {
+            "node": "Create movie ID constraint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create movie ID constraint": {
+      "main": [
+        [
+          {
+            "node": "Create vector index",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create vector index": {
+      "main": [
+        [
+          {
+            "node": "Check vector index",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5cfc21e4-53e3-4016-8422-76d2b41e42ad",
+  "meta": {
+    "instanceId": "70a4fc6cc130c73f7fcd819facecee8ed0d42bd6c46a9fcf26fad49c3bb5c3bf"
+  },
+  "nodeGroups": [],
+  "id": "1I3JMgxqCIvkQs5z",
+  "tags": []
+}

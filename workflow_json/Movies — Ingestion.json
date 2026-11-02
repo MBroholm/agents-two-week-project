@@ -1,0 +1,228 @@
+{
+  "name": "Movies — Ingestion",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "92d4d05a-4f14-477a-b71c-ee28fd7fdf50",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  statement: `\n    MERGE (m:Movie {imdbId: $movie.imdbId})\n    SET m.title = $movie.title,\n        m.year = $movie.year,\n        m.runtimeMinutes = $movie.runtimeMinutes,\n        m.imdbRating = $movie.imdbRating,\n        m.plot = $movie.plot,\n        m.source = $movie.source,\n        m.dataSource = $movie.dataSource,\n        m.embeddingText = $movie.embeddingText\n\n    FOREACH (name IN $movie.directors |\n      MERGE (p:Person {name: name})\n      MERGE (m)-[:DIRECTED_BY]->(p)\n    )\n\n    FOREACH (name IN $movie.actors |\n      MERGE (p:Person {name: name})\n      MERGE (p)-[:ACTED_IN]->(m)\n    )\n\n    FOREACH (name IN $movie.genres |\n      MERGE (g:Genre {name: name})\n      MERGE (m)-[:IN_GENRE]->(g)\n    )\n\n    RETURN m.imdbId AS imdbId, m.title AS title\n  `,\n  parameters: {\n    movie: $json\n  }\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        0
+      ],
+      "id": "00561e01-cd68-40c0-a872-a7e6134141e2",
+      "name": "Save movie graph",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function splitList(value) {\n  if (!value || value === 'N/A') return [];\n  return [...new Set(value.split(',').map(s => s.trim()).filter(Boolean))];\n}\n\nfunction numberOrNull(value) {\n  if (!value || value === 'N/A') return null;\n  const number = Number(value);\n  return Number.isFinite(number) ? number : null;\n}\n\nreturn $input.all().map(item => {\n  const movie = item.json;\n\n  if (movie.Response !== 'True' || !movie.imdbID) {\n    throw new Error(movie.Error || 'Invalid OMDb movie response');\n  }\n\n  if (!movie.Plot || movie.Plot === 'N/A') {\n    throw new Error(`Missing plot for ${movie.imdbID}`);\n  }\n\n  return {\n    json: {\n      imdbId: movie.imdbID,\n      title: movie.Title,\n      year: numberOrNull(movie.Year),\n      runtimeMinutes: numberOrNull(\n        movie.Runtime?.replace(/\\s*min$/, '')\n      ),\n      imdbRating: numberOrNull(movie.imdbRating),\n      plot: movie.Plot,\n      directors: splitList(movie.Director),\n      actors: splitList(movie.Actors),\n      genres: splitList(movie.Genre),\n      source: `https://www.imdb.com/title/${movie.imdbID}/`,\n      dataSource: 'OMDb',\n      embeddingText: [\n        `Title: ${movie.Title}`,\n        `Genres: ${movie.Genre}`,\n        `Plot: ${movie.Plot}`\n      ].join('\\n')\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "c05eeec9-2425-49b7-94c9-08bd52af8010",
+      "name": "Normalise movie"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  model: \"nomic-embed-text:latest\",\n  input: \"search_document: \" + $('Normalise movie').item.json.embeddingText,\n  truncate: false\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "4caeb8e0-fa18-449d-bdf2-d177ee47328d",
+      "name": "Embed movie plot"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  statement: `\n    MATCH (m:Movie {imdbId: $imdbId})\n    SET m.embedding = $embedding,\n        m.embeddingModel = $model\n    RETURN m.title AS title,\n           size(m.embedding) AS dimensions\n  `,\n  parameters: {\n    imdbId: $('Normalise movie').item.json.imdbId,\n    embedding: $json.embeddings[0],\n    model: \"nomic-embed-text:latest\"\n  }\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1344,
+        0
+      ],
+      "id": "9a34cbfe-065a-43a6-929c-126cfafc9287",
+      "name": "Save movie embedding",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "IPZwYO1Ehl9oIILQ",
+          "name": "Neo4j"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const movies = [\n  { imdbId: 'tt1375666', title: 'Inception' },\n  { imdbId: 'tt0816692', title: 'Interstellar' },\n  { imdbId: 'tt0209144', title: 'Memento' },\n  { imdbId: 'tt0482571', title: 'The Prestige' },\n  { imdbId: 'tt0468569', title: 'The Dark Knight' },\n  { imdbId: 'tt0133093', title: 'The Matrix' },\n  { imdbId: 'tt0137523', title: 'Fight Club' },\n  { imdbId: 'tt1130884', title: 'Shutter Island' },\n  { imdbId: 'tt3659388', title: 'The Martian' },\n  { imdbId: 'tt2543164', title: 'Arrival' }\n];\n\nreturn movies.map(movie => ({ json: movie }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "e5510608-75c7-434c-8b50-8035b88b2de2",
+      "name": "Movie list"
+    },
+    {
+      "parameters": {
+        "url": "https://www.omdbapi.com/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "i",
+              "value": "={{ $json.imdbId }}"
+            },
+            {
+              "name": "plot",
+              "value": "full"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        0
+      ],
+      "id": "ea9447ba-d62c-4d8b-9797-bb13d2809ecf",
+      "name": "OMDb",
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "T7xpNYGSaqbVdSQE",
+          "name": "Query Auth account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Movie list",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save movie graph": {
+      "main": [
+        [
+          {
+            "node": "Embed movie plot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise movie": {
+      "main": [
+        [
+          {
+            "node": "Save movie graph",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed movie plot": {
+      "main": [
+        [
+          {
+            "node": "Save movie embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Movie list": {
+      "main": [
+        [
+          {
+            "node": "OMDb",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OMDb": {
+      "main": [
+        [
+          {
+            "node": "Normalise movie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b500fd29-6cb9-4d25-a9c0-8417ad6b329c",
+  "meta": {
+    "instanceId": "70a4fc6cc130c73f7fcd819facecee8ed0d42bd6c46a9fcf26fad49c3bb5c3bf"
+  },
+  "nodeGroups": [],
+  "id": "ulkgrniMlzdIhly5",
+  "tags": []
+}
